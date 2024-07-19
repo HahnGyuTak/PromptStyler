@@ -1,0 +1,26 @@
+
+K : 80
+
+CLIP : 'ViT-L/14'
+
+train_style:
+  epoch : 100
+  lr : 0.002
+  momentum : 0.9
+
+train_cf : 
+  epoch : 100
+  batch_size : 128
+  lr : 0.005
+  momentum : 0.9
+  angular_margin : 0.5
+  scaling_facor : 5
+
+ViT-L/14 : 
+  D : 768
+
+ViT-B/16 :
+  D : 512
+
+ResNet-50:
+  D : 512
