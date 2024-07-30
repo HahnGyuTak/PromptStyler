@@ -1,7 +1,7 @@
 
-K : 20
+K : 80
 
-CLIP : 'ViT-L/14'
+CLIP : 'ViT-B/16'
 
 train_style:
   epoch : 100
@@ -10,16 +10,18 @@ train_style:
 
 train_cf : 
   epoch : 50
-  batch_size : 16
+  batch_size : 128
   lr : 0.005
   momentum : 0.9
   angular_margin : 0.5
   scaling_facor : 5
 
 ViT-L/14 : 
+  tf : "openai/clip-vit-large-patch14"
   D : 768
 
 ViT-B/16 :
+  tf : 'openai/clip-vit-base-patch16'
   D : 512
 
 ResNet-50:

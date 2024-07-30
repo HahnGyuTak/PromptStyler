@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from torch import optim
 from clip import clip
-from transformers import CLIPTextModel, CLIPTokenizer, CLIPModel
+from transformers import CLIPTextModel, CLIPTokenizer, CLIPModel, AutoTokenizer, AutoProcessor
 from transformers.modeling_attn_mask_utils import _prepare_4d_attention_mask, _create_4d_causal_attention_mask
 from diffusers import StableDiffusionPipeline
 import argparse
@@ -17,9 +17,8 @@ from PIL import Image
 from utils import *
 from classifier import *
 from checker import *
-from dataset import *
 
-seed = 10
+seed = 42
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print("Device :", device)
 
@@ -31,14 +30,15 @@ class PromptStyler(nn.Module):
         self.N = len(classes_list)
         self.K = config['K']
 
-        self.tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
+        self.tokenizer = CLIPTokenizer.from_pretrained(config[config['CLIP']]['tf']) # Load CLIPTokenizer
+        self.processor = AutoProcessor.from_pretrained(config[config['CLIP']]['tf']) # Load CLIPProcessor
 
         self.dim = config[config['CLIP']]['D']
-        self.CLIP = CLIPModel.from_pretrained("openai/clip-vit-large-patch14").to(device)
+        self.CLIP = CLIPModel.from_pretrained(config[config['CLIP']]['tf']).to(device)
         
         
         self.diff = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5", safety_checker=None, torch_dtype=torch.float16).to(device)
-        self.diff_prompt_embedd = self.diff.encode_prompt
+        #self.diff_prompt_embedd = self.diff.encode_prompt
 
         dtype = self.CLIP.dtype
         pseudo_vector = torch.empty(self.K, 1, self.dim, dtype=dtype)
@@ -51,6 +51,7 @@ class PromptStyler(nn.Module):
         p_style_list = ["a * style of a" for _ in style_word_vectors]
 
         token_style = self.tokenizer(p_style_list, return_tensors="pt",padding="max_length", max_length=self.tokenizer.model_max_length, truncation=True)
+        # token_style = self.tokenizer(p_style_list, return_tensors="pt",padding="max_length", truncation=True).to(device)
         self.token_p_style_list = token_style['input_ids'].to(device)
         self.style_attention_mask = token_style.attention_mask.to(device)
 
@@ -67,6 +68,8 @@ class PromptStyler(nn.Module):
         self.class_names = classes_list
         
         token_content = self.tokenizer(classes_list, return_tensors="pt",padding="max_length", max_length=self.tokenizer.model_max_length, truncation=True).to(device)
+        # token_content = self.tokenizer(classes_list, return_tensors="pt",padding="max_length", truncation=True).to(device)
+        
         self.token_p_content_list = token_content['input_ids'].to(device)
         
         with torch.no_grad():
@@ -87,6 +90,8 @@ class PromptStyler(nn.Module):
         prompt_list = ["a * style of a " + class_name for class_name in self.class_names]
         
         token_prompt = self.tokenizer(prompt_list, return_tensors="pt",padding="max_length", max_length=self.tokenizer.model_max_length, truncation=True)
+        # token_prompt = self.tokenizer(prompt_list, return_tensors="pt",padding="max_length", truncation=True)
+        
         self.token_prompt_list = token_prompt['input_ids'].to(device)
         self.prompt_attention_mask = token_prompt.attention_mask.to(device)
         with torch.no_grad():
@@ -185,12 +190,19 @@ class PromptStyler(nn.Module):
 
 def style_diveristy_loss(T_style, i, cos_sim):
 
-    L_style = 0
-    for j in range(i):
+    # L_style = 0
+    # for j in range(i):
 
-        L_style += abs(cos_sim(T_style[i], T_style[j]))
+    #     L_style += abs(cos_sim(T_style[i], T_style[j]))
 
-    return L_style/i
+    # return L_style/i
+     # 현재 벡터와 이전 벡터들 간의 코사인 유사도를 계산
+    cos_sims = cos_sim(T_style[i], T_style[:i])
+    
+    # 코사인 유사도의 절대값의 평균을 계산
+    L_style = torch.mean(torch.abs(cos_sims))
+    
+    return L_style
 
 
 def content_consistency_loss(T_style_contents, T_contents, N, cos_sim):
@@ -213,7 +225,7 @@ def content_consistency_loss_NEW(T_style_contents, T_contents, N, ce_loss):
 
 
 if __name__ == '__main__':
-    #seed_everything(seed)
+    seed_everything(seed)
   
     parser = argparse.ArgumentParser(description='Argparse Tutorial')
     parser.add_argument('--data_dir', type=str, default='/home/dataset/OfficeHomeDataset_10072016/Art/')
@@ -221,7 +233,7 @@ if __name__ == '__main__':
     parser.add_argument('--dataset', type=str, default='OfficeHome')
     parser.add_argument('--train', type=str, default='None', choices=['both', 'style', 'classifier', None],
         help='Choose one of the following: both, diff, classifier')
-    parser.add_argument('--config', type=str, default="config/config_k80.yaml")
+    parser.add_argument('--config', type=str, default="config/config_vitl14.yaml")
     parser.add_argument('--infer', type=str, default='diff', choices=['both', 'diff', 'classifier'],
         help='Choose one of the following: both, diff, classifier')
     
@@ -244,10 +256,9 @@ if __name__ == '__main__':
     print("Class N : ", len(classname_list))
     
     arc_options = {'in_features': config[config['CLIP']]['D'],
-    #arc_options = {'in_features': 768 * 2,
-                       'out_features': len(classname_list),
-                      'scaling_facor': config['train_cf']['scaling_facor'],
-                      'margin': config['train_cf']['angular_margin']}
+                    'out_features': len(classname_list),
+                    'scaling_facor': config['train_cf']['scaling_facor'],
+                    'margin': config['train_cf']['angular_margin']}
     
     save_dir = os.path.join(args.save_dir, args.dataset)
     os.makedirs(save_dir, exist_ok=True)
@@ -373,7 +384,7 @@ if __name__ == '__main__':
             prompt_feat = torch.load(os.path.join(save_dir, 'features', f'prompt_feat.pth')).cpu()
             model = PromptStyler(config = config, classes_list=classname_list).to(device)
 
-        if Wrong_img is None:
+        if "ViTL14" in args.dataset and Wrong_img is None:
             Wrong_img = {}
             with open(f'result/{args.dataset}/{args.dataset}.csv', newline='') as csvfile:
                 reader = csv.reader(csvfile)
@@ -382,14 +393,23 @@ if __name__ == '__main__':
                         continue
                     Wrong_img[row[0]] = list(map(int, row[2:]))
         
-        if not os.path.exists(os.path.join(save_dir, 'features', f'image_feat.pth')):
-            img_to_feature(imgs_dir = os.path.join(save_dir, 'txt2img_res_f32'),
-                           save_dir = os.path.join(save_dir, 'features'))
-            
-            print("class_name :", classname_list)
+        if "ViTL14" in args.dataset :
+            if not os.path.exists(os.path.join(save_dir, 'features', f'image_feat.pth')):
+                img_to_feature(imgs_dir = os.path.join(save_dir, 'txt2img_res_f32'),
+                            save_dir = os.path.join(save_dir, 'features'))
+                
+                print("class_name :", classname_list)
 
-        image_feat = torch.load(os.path.join(save_dir, 'features', f'image_feat.pth')).cpu()
-        print("image_feat shape :", image_feat.shape)
+            image_feat = torch.load(os.path.join(save_dir, 'features', f'image_feat.pth')).cpu()
+            print("image_feat shape :", image_feat.shape)
+            image_feat = None
+            Wrong_img = None
+            
+        else :
+            image_feat = None
+            Wrong_img = None
+        # image_feat = None
+       # 
         print("prompt_feat shape :", prompt_feat.shape)
         
         train_classifier(t_feature = prompt_feat,
@@ -401,7 +421,7 @@ if __name__ == '__main__':
                          learning_rate=config['train_cf']['lr'],
                          momentum=config['train_cf']['momentum'],
                          save_dir = save_dir,
-                         Wrong_img = None)
+                         Wrong_img = Wrong_img)
         
       
     if args.infer == 'both' or args.infer == 'classifier':
@@ -409,81 +429,10 @@ if __name__ == '__main__':
         if args.train != 'classifier' and args.train != 'both':
             model = PromptStyler(config = config, classes_list=classname_list).to(device)
         torch.cuda.empty_cache()
-        metric_fc = ArcMarginProduct(in_features=arc_options['in_features'], 
-                                 out_features=arc_options['out_features'],
-                                 s=arc_options['scaling_facor'],
-                                 m=arc_options['margin']).to(device)
-        metric_fc.load_state_dict(torch.load(os.path.join(save_dir, 'models', f'arfFace.pth')))
-        
-        torch.cuda.empty_cache()
-        
-        Inference_N = 50
-        print("ㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡ"); #do_something()
-        img_path_list = []
-        for i in range(Inference_N):
-            random_class = classname_list[torch.randint(0, len(classname_list), (1,)).item()]
-            random_style = torch.randint(0, model.K, (1,)).item()
-            img_path = os.path.join(save_dir, 'txt2img_res_f32', random_class, f'style_{random_style}.png')
-            
-            img_path_list.append(img_path)
-        
-        #seed_everything(seed)
-        with torch.no_grad():
-            prob = inference_classifier(metric_fc, model, img_path_list)
-        
-        class_idx = torch.argmax(prob, dim = -1)
-        
-        answer_N = 0
-        wrong_list = []
-        for i in range(Inference_N):
-            #print(f"Image : {img_path_list[i]}, Predicted Class : {classname_list[class_idx[i].item()]}")
-            if classname_list[class_idx[i].item()] in img_path_list[i]:
-                answer_N += 1
-            else:
-                wrong_list.append((img_path_list[i], classname_list[class_idx[i].item()]))
-        print(f"Accuracy : {answer_N/Inference_N * 100:.2f}%")
-        print("------------------------------------------------------------------")
-        for wrong_img in wrong_list:
-            print(f"Wrong Image : {wrong_img[0]}, Predicted Class : {wrong_img[1]}")
-            
-        if 'PACS' in args.dataset:
-            val_data = load_PACS(16)
-            label_name = 'labels'
-            
-        if 'OfficeHome' in args.dataset:
-            val_data = load_OfficeHome(16, classname_list)
-            label_name = 'labels'
-            
-        if 'VLCS' in args.dataset:
-            val_data = load_VLCS(16)
-            label_name = 'labels'
 
-        processor = AutoProcessor.from_pretrained("openai/clip-vit-large-patch14")
+        path = os.path.join(save_dir, 'models', f'arfFace.pth')
         
-        Total_img = 0
-        Total_correct = 0
-
-        for i, samples in enumerate(tqdm(val_data)):
-            if 'PACS' in args.dataset:
-                batch_images = [sample['images'] for sample in samples]
-                batch_labels = torch.tensor([sample[label_name].item() for sample in samples]).to(device)
-
-            if 'VLCS' in args.dataset or 'OfficeHome' in args.dataset:
-                batch_images, batch_labels = samples[0], samples[1].to(device)
-            
-            style_img_token = processor(images=batch_images, return_tensors="pt").to(device)
-
-            style_img_feature = model.CLIP.get_image_features(**style_img_token)
-            style_img_feature = style_img_feature / torch.norm(style_img_feature, p=2, dim=-1, keepdim=True)  # 정규화
-
-            prob = metric_fc(style_img_feature)
-            # prob = metric_fc(torch.concat([style_img_feature, style_img_feature], dim=-1))
-            predict = torch.argmax(prob, dim=-1)
-
-            Total_correct += (predict == batch_labels).sum().item()
-            Total_img += len(batch_images)
-            
-            torch.cuda.empty_cache()
-        print("Total Image : ", Total_img)
-        print("Accuracy : ", round(Total_correct / Total_img * 100, 3), "%")
+        inference_classifier(path, args.dataset, config, classname_list, model, arc_options)
+        
+        
     

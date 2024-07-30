@@ -1,13 +1,14 @@
 import deeplake
 import os
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, random_split
 from torchvision import transforms
 from PIL import Image
 from tqdm import tqdm
 import numpy as np
 
 transform = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor()])
+val_split = 0.2
 
 class VLCSDataset(Dataset):
     def __init__(self, root_dir, transform=None):
@@ -17,6 +18,7 @@ class VLCSDataset(Dataset):
         self.classname_list = sorted(['bird', 'car', 'chair', 'dog', 'person'])
         
         self.samples = self._make_dataset()
+        np.random.shuffle(self.samples)
 
     def _make_dataset(self):
         samples = []
@@ -56,6 +58,8 @@ class OfficeHomeDataset(Dataset):
         self.classname_list = class_names
         
         self.samples = self._make_dataset()
+        # sample 셔플
+        np.random.shuffle(self.samples)
 
     def _make_dataset(self):
         samples = []
@@ -87,11 +91,10 @@ class OfficeHomeDataset(Dataset):
     
         return image, label
 
-
 def load_PACS(batch_size=32):
     ds = deeplake.load("hub://activeloop/pacs-test")
-    
-    pacs_loader = ds.dataloader().batch(batch_size).shuffle() # return samples as PIL images for transforms
+    transform = transforms.Resize((224, 224))
+    pacs_loader = ds.dataloader().batch(batch_size) #.transform(transform=transform) # return samples as PIL images for transforms
     
     return pacs_loader
     
@@ -99,14 +102,27 @@ def load_OfficeHome(batch_size=32, class_names=['Art', 'Clipart', 'Product', 'Re
    
     ds = OfficeHomeDataset(root_dir='/home/dataset/OfficeHomeDataset_10072016', class_names=class_names, transform=None)
     officehome_loader = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=4)
-    return officehome_loader    
+     # Train/Validation 데이터셋 분할
+    val_size = int(len(ds) * val_split)
+    train_size = len(ds) - val_size
+    _, val_ds = random_split(ds, [train_size, val_size])
+    
+    # DataLoader 생성
+    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=True, num_workers=4)
+    return val_loader    
 
 def load_VLCS(batch_size=32):
     
-    vlc_dataset = VLCSDataset(root_dir='/home/dataset/VLCS/VLCS', transform=None)
-    vlc_loader = DataLoader(vlc_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
+    ds = VLCSDataset(root_dir='/home/dataset/VLCS/VLCS', transform=None)
+    vl = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=4)
+
+    val_size = int(len(ds) * val_split)
+    train_size = len(ds) - val_size
+    _, val_ds = random_split(ds, [train_size, val_size])
     
-    return vlc_loader
+    # DataLoader 생성
+    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=True, num_workers=4)
+    return val_loader 
 
 if __name__ == "__main__":
     pass
