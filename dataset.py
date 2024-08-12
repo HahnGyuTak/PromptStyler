@@ -23,11 +23,12 @@ class VLCSDataset(Dataset):
     def _make_dataset(self):
         samples = []
         for domain in tqdm(os.listdir(self.root_dir)):
-            domain_path = os.path.join(self.root_dir, domain)
+            domain_path = os.path.join(self.root_dir, domain, 'test')
             if not os.path.isdir(domain_path):
                 continue
-            for i, class_name in enumerate(self.classname_list):
-                class_path = os.path.join(domain_path, class_name)
+            #for i, class_name in enumerate(self.classname_list):
+            for i in range(5):
+                class_path = os.path.join(domain_path, str(i))
                 if not os.path.isdir(class_path):
                     continue
                 for img_name in os.listdir(class_path):
@@ -93,39 +94,36 @@ class OfficeHomeDataset(Dataset):
 
 def load_PACS(batch_size=32):
     ds = deeplake.load("hub://activeloop/pacs-test")
-    transform = transforms.Resize((224, 224))
-    pacs_loader = ds.dataloader().batch(batch_size) #.transform(transform=transform) # return samples as PIL images for transforms
     
+    pacs_loader = ds.dataloader().batch(batch_size) #.transform(transform=transform) # return samples as PIL images for transforms
+ 
     return pacs_loader
     
 def load_OfficeHome(batch_size=32, class_names=['Art', 'Clipart', 'Product', 'RealWorld']):
    
     ds = OfficeHomeDataset(root_dir='/home/dataset/OfficeHomeDataset_10072016', class_names=class_names, transform=None)
     officehome_loader = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=4)
-     # Train/Validation 데이터셋 분할
-    val_size = int(len(ds) * val_split)
-    train_size = len(ds) - val_size
-    _, val_ds = random_split(ds, [train_size, val_size])
     
-    # DataLoader 생성
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=True, num_workers=4)
-    return val_loader    
+    return officehome_loader    
 
 def load_VLCS(batch_size=32):
     
-    ds = VLCSDataset(root_dir='/home/dataset/VLCS/VLCS', transform=None)
+    ds = VLCSDataset(root_dir='/home/dataset/VLCS/VLCS_github', transform=None)
     vl = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=4)
-
+    print(len(vl) * batch_size)
     val_size = int(len(ds) * val_split)
     train_size = len(ds) - val_size
     _, val_ds = random_split(ds, [train_size, val_size])
     
     # DataLoader 생성
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=True, num_workers=4)
-    return val_loader 
+    return vl 
 
 if __name__ == "__main__":
-    pass
+    
+    load_VLCS(1)
+    
+    
 
 '''
 Dataset/

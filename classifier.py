@@ -315,7 +315,7 @@ def train_classifier(t_feature, i_feature, model, arc_option, num_epochs, batch_
             ArcFace_Loss.append(loss.item())
             # print(f'Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(dataloader)}], Loss: {loss.item():.4f}')
             
-        print(f"Epoch [{epoch+1}/{num_epochs}]  Loss : {round(loss.item(),4)}  Batch len : {len(dataloader)}")
+        print(f"Epoch [{epoch+1}/{num_epochs}]  Loss : {round(loss.item(),4)}")
 
 
     end_time = datetime.now()
@@ -325,7 +325,7 @@ def train_classifier(t_feature, i_feature, model, arc_option, num_epochs, batch_
     mins, secs = divmod(rem, 60)
     print(f"Total training time: {hours}h {mins}m {secs}s")
     
-    torch.save(metric_fc.state_dict(), os.path.join(save_dir, 'models', f'arfFace.pth'))
+    torch.save(metric_fc.state_dict(), os.path.join(save_dir, 'models', f'arfFace1.pth'))
     
     # ArcFace loss 시각화
     plt.figure(figsize=(10, 6))
@@ -389,7 +389,7 @@ def train_classifier_NEW(t_feature, i_feature, model, arc_option, num_epochs, ba
     mins, secs = divmod(rem, 60)
     print(f"Total training time: {hours}h {mins}m {secs}s")
     
-    torch.save(metric_fc.state_dict(), os.path.join(save_dir, 'models', f'arfFace.pth'))
+    torch.save(metric_fc.state_dict(), os.path.join(save_dir, 'models', f'arfFace2.pth'))
     
     # ArcFace loss 시각화
     plt.figure(figsize=(10, 6))
@@ -400,7 +400,7 @@ def train_classifier_NEW(t_feature, i_feature, model, arc_option, num_epochs, ba
     plt.ylabel('Loss')
     plt.savefig(os.path.join(save_dir, 'ArcFace Loss.png'))
     
-    #print("Dataset Len:", dataset.__len__(), "Total Len :" , model.K * len(model.class_names))
+    print("Dataset Len:", dataset.__len__(), "Total Len :" , model.K * len(model.class_names))
     print("Classifier Training Completed")
       
       
@@ -614,12 +614,75 @@ def inference_classifier_NEW_NEW(pth_path, dataset, config, classname_list, mode
     print("Total Image : ", Total_img)
     print("Accuracy : ", round(Total_correct / Total_img * 100, 1), "%")
     
-
+    
+def text_transformer_forward( x: torch.Tensor, attn_mask=None):
+        for i, r in enumerate(model.transformer.resblocks):
+            if i == len(model.transformer.resblocks):
+                break
+            if model.transformer.grad_checkpointing and not torch.jit.is_scripting():
+                pass
+            else:
+                x = r(x, attn_mask=attn_mask)
+        return x
 if __name__ == "__main__":
     
-    prop = AutoProcessor.from_pretrained("openai/clip-vit-large-patch14")
+    import open_clip
+    import torch
+    import torch.nn as nn
+    from diffusers import StableDiffusionPipeline
+
+    model, preprocess = open_clip.create_model_from_pretrained('hf-hub:laion/CLIP-ViT-H-14-laion2B-s32B-b79K', device='cuda')
+    tokenizer = open_clip.get_tokenizer('hf-hub:laion/CLIP-ViT-H-14-laion2B-s32B-b79K')
+
+
+    tokenizer = tokenizer
+    processor = preprocess
+
+    dim = 1024
+    1
+
+    text = tokenizer(["a photo of a dog"]).to(device)
     
-    output = prop(text=["a photo of a dog", "a photo of a cat"], return_tensors="pt", padding = "max_length", truncation=True)
     
-    print(output.input_ids.shape)
+    x = model.token_embedding(text)  # [batch_size, n_ctx, d_model]
+    x = x + model.positional_embedding
+    x = x.permute(1, 0, 2)  # NLD -> LND
+    x = text_transformer_forward(x, attn_mask=model.attn_mask)
+    x = x.permute(1, 0, 2)  # LND -> NLD
+    x = model.ln_final(x)
+    
+    print("text embedding : ", x.shape)
+    
+    diff = StableDiffusionPipeline.from_pretrained("stabilityai/stable-diffusion-2-1", safety_checker=None, torch_dtype=torch.float16).to(device)
+    
+    
+'''
+model, preprocess = open_clip.create_model_from_pretrained('hf-hub:laion/CLIP-ViT-H-14-laion2B-s32B-b79K', device='cuda')
+    tokenizer = open_clip.get_tokenizer('hf-hub:laion/CLIP-ViT-H-14-laion2B-s32B-b79K')
+    
+    t = tokenizer(["a photo of a dog", "a photo of a cat"]).to(device)
+    
+    print("token : ", t.shape)
+    
+    cast_dtype = model.transformer.get_cast_dtype()
+    x = model.token_embedding(t).to(cast_dtype)
+    
+    print("text embedding : ", x.shape)
+    
+    x = x + model.positional_embedding.to(cast_dtype)
+    x = model.transformer(x, attn_mask = model.attn_mask)
+    x = model.ln_final(x)
+    
+    print("final embedding : ", x.shape)
+    
+    x, _ = text_global_pool(x, t, model.text_pool_type)
+    
+    if isinstance(model.text_projection, nn.Linear):
+        x = model.text_projection(x)
+    else:
+        x = x @ model.text_projection
+        
+    print("text projection : ", x.shape)
+
+'''
     

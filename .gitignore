@@ -4,3 +4,5 @@ check/
 __pycache__/
 TE.py
 test.ipynb
+openclip_eval/
+.vscode/

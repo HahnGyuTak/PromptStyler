@@ -14,10 +14,12 @@ import argparse
 import matplotlib.pyplot as plt
 from PIL import Image
 
+from ps_openclip import PromptStyler_OPENCLIP
 from utils import *
 from classifier import *
 from checker import *
-
+from openclip_eval.src.training.imagenet_zeroshot_data import imagenet_classnames
+from openclip_eval.src.training.downstream_zeroshot_data import vlcs_classnames, pacs_classnames, officehome_classnames
 seed = 42
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print("Device :", device)
@@ -134,6 +136,20 @@ class PromptStyler(nn.Module):
         result = torch.cat([prompt_start, ctx, prompt_end], dim=2)
         
         return result
+    
+    def get_p_style_content_NEW_K(self, k):
+        # ctx를 [K, N, 1, D] 형태로 확장
+        ctx = self.ctx.unsqueeze(1).expand(self.K, self.N, 1, self.dim)[k] # [ N, 1, D]
+        
+        # prompt_start와 prompt_end를 [ N, ~, D] 형태로 확장
+        prompt_start = self.prompt_start
+        prompt_end = self.prompt_end
+   
+    
+        # prompt_start, ctx, prompt_end를 concatenate하여 최종 [K, N, 77, D] 형태의 텐서 생성
+        result = torch.cat([prompt_start, ctx, prompt_end], dim=1)
+        
+        return result
 
 
     def forward(self, k, p_case):
@@ -163,7 +179,7 @@ class PromptStyler(nn.Module):
 
         #style-content
         if p_case == 'style_content':
-            embedding_style_content = self.get_p_style_content_NEW() #[K, N, 77, D]
+            embedding_style_content = self.get_p_style_content_NEW_K(k) #[K, N, 77, D]
             
             
             # style_content_feature = torch.cat([self.T_encoder(embedding_style_content[k][n].unsqueeze(0), self.token_prompt_list[n].unsqueeze(0)) for n in range(self.N)], dim=0) #[N, 512]
@@ -172,9 +188,22 @@ class PromptStyler(nn.Module):
             causal_attention_mask = _create_4d_causal_attention_mask(
                   self.token_prompt_list.size(), embedding_style_content.dtype, device=embedding_style_content.device
               )
-            last_hidden_state = self.CLIP.text_model.final_layer_norm(self.CLIP.text_model.encoder(inputs_embeds=embedding_style_content[k], attention_mask=attention_mask, causal_attention_mask=causal_attention_mask)[0])
+
+            # tmp = self.CLIP.text_model.encoder(inputs_embeds=embedding_style_content, attention_mask=attention_mask, causal_attention_mask=causal_attention_mask)[0]
+            # last_hidden_state = self.CLIP.text_model.final_layer_norm(tmp)
             
-            #last_hidden_state = self.diff_prompt_embedd(prompt = None, device = device, num_images_per_prompt = 1, do_classifier_free_guidance = False, prompt_embeds = last_hidden_state)[0]
+            # 배치 단위로 처리
+            last_hidden_states = []
+            batch_size = 20  # 배치 크기를 조정하여 메모리 사용량을 조절
+            for i in range(0, embedding_style_content.size(0), batch_size):
+                batch_embedding = embedding_style_content[i:i + batch_size]
+                tmp = self.CLIP.text_model.encoder(inputs_embeds=batch_embedding, attention_mask=attention_mask, causal_attention_mask=causal_attention_mask[i:i+batch_size])[0]
+                last_hidden_state = self.CLIP.text_model.final_layer_norm(tmp)
+                last_hidden_states.append(last_hidden_state)
+                torch.cuda.empty_cache()
+                
+
+            last_hidden_state = torch.cat(last_hidden_states, dim=0) 
             
             #print("[N, 77, D] Embedding P_style_content", last_hidden_state.shape)
             pooled_output = last_hidden_state[torch.arange(last_hidden_state.shape[0], device=last_hidden_state.device),
@@ -190,19 +219,16 @@ class PromptStyler(nn.Module):
 
 def style_diveristy_loss(T_style, i, cos_sim):
 
-    # L_style = 0
-    # for j in range(i):
+    L_style = 0
+    for j in range(i):
 
-    #     L_style += abs(cos_sim(T_style[i], T_style[j]))
+        L_style += abs(cos_sim(T_style[i], T_style[j]))
 
-    # return L_style/i
-     # 현재 벡터와 이전 벡터들 간의 코사인 유사도를 계산
-    cos_sims = cos_sim(T_style[i], T_style[:i])
+    return L_style/i
+    # cos_sims = cos_sim(T_style[i], T_style[:i])
+    # L_style = torch.mean(torch.abs(cos_sims))
     
-    # 코사인 유사도의 절대값의 평균을 계산
-    L_style = torch.mean(torch.abs(cos_sims))
-    
-    return L_style
+    # return L_style
 
 
 def content_consistency_loss(T_style_contents, T_contents, N, cos_sim):
@@ -231,27 +257,30 @@ if __name__ == '__main__':
     parser.add_argument('--data_dir', type=str, default='/home/dataset/OfficeHomeDataset_10072016/Art/')
     parser.add_argument('--save_dir', type=str, default='/home/gue707/PromptStyler/result/')
     parser.add_argument('--dataset', type=str, default='OfficeHome')
-    parser.add_argument('--train', type=str, default='None', choices=['both', 'style', 'classifier', None],
+    parser.add_argument('--train', type=str, default=None, choices=['both', 'style', 'classifier', None],
         help='Choose one of the following: both, diff, classifier')
     parser.add_argument('--config', type=str, default="config/config_vitl14.yaml")
-    parser.add_argument('--infer', type=str, default='diff', choices=['both', 'diff', 'classifier'],
+    parser.add_argument('--infer', type=str, default=None, choices=['both', 'diff', 'classifier', None],
         help='Choose one of the following: both, diff, classifier')
     
     args = parser.parse_args()
 
-    classname_dir = sorted(os.listdir(args.data_dir), key=str.lower)
-    classname_list = [name.replace(" ", "_") for name in classname_dir]
+    # classname_dir = sorted(os.listdir(args.data_dir), key=str.lower)
+    # classname_list = [name.replace(" ", "_") for name in classname_dir]
+    
+    classname_list = officehome_classnames
 
     with open(args.config, 'r') as file:
         config = yaml.safe_load(file)
 
     if 'VLCS' in args.dataset:
-        classname_list = sorted(['bird', 'car', 'chair', 'dog', 'person'])
+        classname_list = vlcs_classnames
     if 'PACS' in args.dataset:
-        classname_list = sorted(['dog', 'elephant', 'giraffe', 'guitar', 'horse', 'house', 'person'])
+        classname_list = pacs_classnames
     if 'Animal' in args.dataset:
         classname_list = sorted(['bird', 'cat', 'dog', 'fish', 'horse', 'rabbit', 'sheep', 'turtle', 'whale', 'elephant', 'lion', 'penguin', 'tiger'])
-    
+    if 'ImageNet' in args.dataset:
+        classname_list = imagenet_classnames
     
     print("Class N : ", len(classname_list))
     
@@ -274,7 +303,9 @@ if __name__ == '__main__':
         train_INFO = {'K': K, 'epoch_per_style': L, 'N': len(classname_list)}
         get_cuda_info(train_INFO)
         
-        model = PromptStyler(config = config, classes_list=classname_list).to(device)
+        PS = PromptStyler_OPENCLIP if 'ViTH' in args.dataset else PromptStyler
+        
+        model = PS(config = config, classes_list=classname_list).to(device)
         
         for name, param in model.named_parameters():
             if "ctx" not in name:
@@ -314,7 +345,7 @@ if __name__ == '__main__':
                 L_content = content_consistency_loss_NEW(T_style_contents, T_contents, model.N, ce_loss)
        
                 # # Total Loss
-                L_prompt = L_content + L_style
+                L_prompt = L_style + L_content
                 
                 # Gradient update
                 optimizer.zero_grad()
@@ -326,6 +357,25 @@ if __name__ == '__main__':
                 
                 if (iter+1) % 10 == 0:
                   print(f"------------ [{i}/{K}][{iter+1}/{L}] -- L_style : {L_style :.4f}, L_content : {L_content:.4f}")
+            
+        for iter in tqdm(range(L)):
+            #Content Consistency Loss
+            _, T_style_contents = model(0, 'style_content') #[N, 768]
+            #L_content = content_consistency_loss_TEST(T_style_contents, T_contents, model.N, cos_sim)
+            L_content = content_consistency_loss_NEW(T_style_contents, T_contents, model.N, ce_loss)
+    
+            # # Total Loss
+            L_prompt = L_content
+            
+            # Gradient update
+            optimizer.zero_grad()
+            L_prompt.backward()
+            optimizer.step()
+            
+            Content_loss[i].append(L_content.item())
+            
+            if (iter+1) % 10 == 0:
+                print(f"------------ [0/{K}][{iter+1}/{L}] L_content : {L_content:.4f}")
 
         with torch.no_grad():
             # prmopt_emb = torch.stack([model(K, 'style')[0] for ps in range(80)])
@@ -373,35 +423,38 @@ if __name__ == '__main__':
                 image = pipe(prompt_embeds=style_emb_im.unsqueeze(0)).images[0]
                 os.makedirs(os.path.join(image_result_dir, classname_list[m]), exist_ok=True) 
                 image.save(f'{image_result_dir}/{classname_list[m]}/style_{i}.png')
-                print(f"Save Image of {m}th Content({classname_list[m]}) of {i}th Style")
+                print(f"Save Image of {m+1}th Content({classname_list[m]}) of {i+1}th Style")
 
         Wrong_img = check(args.dataset, save_dir)
 
     if args.train == 'both' or args.train == 'classifier':
       
         # Classifierㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡㅡ
-        if args.train == 'classifier' and args.infer == 'classifier':
+        if args.train == 'classifier' :
             prompt_feat = torch.load(os.path.join(save_dir, 'features', f'prompt_feat.pth')).cpu()
-            model = PromptStyler(config = config, classes_list=classname_list).to(device)
+            
+            PS = PromptStyler_OPENCLIP if 'ViTH' in args.dataset else PromptStyler
+            
+            model = PS(config = config, classes_list=classname_list).to(device)
 
-        if "ViTL14" in args.dataset and Wrong_img is None:
-            Wrong_img = {}
-            with open(f'result/{args.dataset}/{args.dataset}.csv', newline='') as csvfile:
-                reader = csv.reader(csvfile)
-                for i, row in enumerate(reader):
-                    if i == 0 or row[0] == 'total':
-                        continue
-                    Wrong_img[row[0]] = list(map(int, row[2:]))
+        # if "ViTL14" in args.dataset and Wrong_img is None:
+        #     Wrong_img = {}
+        #     with open(f'result/{args.dataset}/{args.dataset}.csv', newline='') as csvfile:
+        #         reader = csv.reader(csvfile)
+        #         for i, row in enumerate(reader):
+        #             if i == 0 or row[0] == 'total':
+        #                 continue
+        #             Wrong_img[row[0]] = list(map(int, row[2:]))
         
         if "ViTL14" in args.dataset :
-            if not os.path.exists(os.path.join(save_dir, 'features', f'image_feat.pth')):
-                img_to_feature(imgs_dir = os.path.join(save_dir, 'txt2img_res_f32'),
-                            save_dir = os.path.join(save_dir, 'features'))
+            # if not os.path.exists(os.path.join(save_dir, 'features', f'image_feat.pth')):
+            #     img_to_feature(imgs_dir = os.path.join(save_dir, 'txt2img_res_f32'),
+            #                 save_dir = os.path.join(save_dir, 'features'))
                 
-                print("class_name :", classname_list)
+            #     print("class_name :", classname_list)
 
-            image_feat = torch.load(os.path.join(save_dir, 'features', f'image_feat.pth')).cpu()
-            print("image_feat shape :", image_feat.shape)
+            # image_feat = torch.load(os.path.join(save_dir, 'features', f'image_feat.pth')).cpu()
+            # print("image_feat shape :", image_feat.shape)
             image_feat = None
             Wrong_img = None
             
@@ -427,12 +480,17 @@ if __name__ == '__main__':
     if args.infer == 'both' or args.infer == 'classifier':
       
         if args.train != 'classifier' and args.train != 'both':
-            model = PromptStyler(config = config, classes_list=classname_list).to(device)
+            PS = PromptStyler_OPENCLIP if 'ViTH' in args.dataset else PromptStyler
+            model = PS(config = config, classes_list=classname_list).to(device)
         torch.cuda.empty_cache()
 
-        path = os.path.join(save_dir, 'models', f'arfFace.pth')
+        path = os.path.join(save_dir, 'models', f'arfFace1.pth')
         
-        inference_classifier(path, args.dataset, config, classname_list, model, arc_options)
+        if path.split('/')[-1] == 'arfFace1.pth':
+            inference_classifier(path, args.dataset, config, classname_list, model, arc_options)
+        
+        elif path.split('/')[-1] == 'arfFace2.pth':
+            inference_classifier_NEW(path, args.dataset, config, classname_list, model, arc_options)
         
         
     
