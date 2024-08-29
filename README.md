@@ -32,4 +32,7 @@ CUDA_VISIBLE_DEVICES=0 python3 main.py --dataset PACS --train both --infer both
 #### Selection
 
 * `--config` : To use your config file, enter the `path` (See [this]((config/config_k80.yaml)) for the config file format.)
+  ```Shell
+  CUDA_VISIBLE_DEVICES=0 python3 main.py --dataset OfficeHome_K200 --train both --infer both --config config/config_vitb32_K200.yaml
+  ```
 
