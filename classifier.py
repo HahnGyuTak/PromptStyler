@@ -6,7 +6,6 @@ import os
 from datetime import datetime
 
 from torch.utils.data import Dataset, DataLoader
-from sklearn.preprocessing import LabelEncoder
 import math
 import matplotlib.pyplot as plt
 

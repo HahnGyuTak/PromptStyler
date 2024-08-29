@@ -2,11 +2,9 @@ import os
 import sys
 import yaml
 from tqdm import tqdm
-import pandas as pd
 import torch
 import torch.nn as nn
 from torch import optim
-from clip import clip
 from transformers import CLIPTextModel, CLIPTokenizer, CLIPModel, AutoTokenizer, AutoProcessor
 from transformers.modeling_attn_mask_utils import _prepare_4d_attention_mask, _create_4d_causal_attention_mask
 from diffusers import StableDiffusionPipeline
@@ -21,7 +19,11 @@ from checker import *
 from openclip_eval.src.training.imagenet_zeroshot_data import imagenet_classnames
 from openclip_eval.src.training.downstream_zeroshot_data import vlcs_classnames, pacs_classnames, officehome_classnames
 seed = 42
-device = "cuda" if torch.cuda.is_available() else "cpu"
+print("Available devices:", torch.cuda.device_count())
+for i in range(torch.cuda.device_count()):
+    print(f"Device {i}: {torch.cuda.get_device_name(i)}")
+    
+device = "cuda:0" if torch.cuda.is_available() else "cpu"
 print("Device :", device)
 
 class PromptStyler(nn.Module):
@@ -36,10 +38,10 @@ class PromptStyler(nn.Module):
         self.processor = AutoProcessor.from_pretrained(config[config['CLIP']]['tf']) # Load CLIPProcessor
 
         self.dim = config[config['CLIP']]['D']
-        self.CLIP = CLIPModel.from_pretrained(config[config['CLIP']]['tf']).to(device)
+        self.CLIP = CLIPModel.from_pretrained(config[config['CLIP']]['tf']).to("cuda:0")
         
-        
-        self.diff = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5", safety_checker=None, torch_dtype=torch.float16).to(device)
+        if config['CLIP'] ==  'ViT-L/14':
+            self.diff = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5", safety_checker=None, torch_dtype=torch.float16).to(device)
         #self.diff_prompt_embedd = self.diff.encode_prompt
 
         dtype = self.CLIP.dtype
@@ -54,13 +56,14 @@ class PromptStyler(nn.Module):
 
         token_style = self.tokenizer(p_style_list, return_tensors="pt",padding="max_length", max_length=self.tokenizer.model_max_length, truncation=True)
         # token_style = self.tokenizer(p_style_list, return_tensors="pt",padding="max_length", truncation=True).to(device)
-        self.token_p_style_list = token_style['input_ids'].to(device)
+        self.token_p_style_list = token_style['input_ids'].to("cuda:0")
         self.style_attention_mask = token_style.attention_mask.to(device)
 
         
         with torch.no_grad():
-          self.embedding_p_style_list = self.CLIP.text_model.embeddings(input_ids = self.token_p_style_list.view(-1, self.token_p_style_list.size()[-1]))
-          
+            self.CLIP = self.CLIP.to("cuda:0")
+            self.embedding_p_style_list = self.CLIP.text_model.embeddings(input_ids = self.token_p_style_list.view(-1, self.token_p_style_list.size()[-1]))
+            self.CLIP = self.CLIP.to("cuda:0")
         self.p_style_start = self.embedding_p_style_list[:, :2, :] #[K, 2, D]
         self.p_style_end = self.embedding_p_style_list[:, 3:, :]    #[K, 74, D]
 
@@ -72,17 +75,19 @@ class PromptStyler(nn.Module):
         token_content = self.tokenizer(classes_list, return_tensors="pt",padding="max_length", max_length=self.tokenizer.model_max_length, truncation=True).to(device)
         # token_content = self.tokenizer(classes_list, return_tensors="pt",padding="max_length", truncation=True).to(device)
         
-        self.token_p_content_list = token_content['input_ids'].to(device)
+        self.token_p_content_list = token_content['input_ids'].to("cuda:0")
         
         with torch.no_grad():
-          self.embedding_p_content_list_tmp = self.CLIP.text_model(input_ids = self.token_p_content_list, attention_mask=None)[0]
-          
+            self.CLIP = self.CLIP.to("cuda:0")
+            self.embedding_p_content_list_tmp = self.CLIP.text_model(input_ids = self.token_p_content_list, attention_mask=None)[0]
         last_hidden_state = self.embedding_p_content_list_tmp
         
         pooled_out = last_hidden_state[torch.arange(last_hidden_state.shape[0], device=last_hidden_state.device),
                                       self.token_p_content_list.to(dtype=torch.int, device=last_hidden_state.device).argmax(dim=-1),
                                       ].to(torch.float32)
         content_feature = self.CLIP.text_projection(pooled_out)
+        self.CLIP = self.CLIP.to("cuda:0")
+        
         self.content_feature = content_feature / content_feature.norm(p=2, dim=-1, keepdim=True)
         # print("[N, D] p_content feature shape :", self.content_feature.shape)
         # input()
@@ -94,7 +99,7 @@ class PromptStyler(nn.Module):
         token_prompt = self.tokenizer(prompt_list, return_tensors="pt",padding="max_length", max_length=self.tokenizer.model_max_length, truncation=True)
         # token_prompt = self.tokenizer(prompt_list, return_tensors="pt",padding="max_length", truncation=True)
         
-        self.token_prompt_list = token_prompt['input_ids'].to(device)
+        self.token_prompt_list = token_prompt['input_ids'].to("cuda:0")
         self.prompt_attention_mask = token_prompt.attention_mask.to(device)
         with torch.no_grad():
           self.embedding_prompt_list = self.CLIP.text_model.embeddings(input_ids = self.token_prompt_list.view(-1, self.token_prompt_list.size()[-1]))
@@ -139,13 +144,13 @@ class PromptStyler(nn.Module):
     
     def get_p_style_content_NEW_K(self, k):
         # ctx를 [K, N, 1, D] 형태로 확장
-        ctx = self.ctx.unsqueeze(1).expand(self.K, self.N, 1, self.dim)[k] # [ N, 1, D]
+        ctx = self.ctx.unsqueeze(1).expand(self.K, self.N, 1, self.dim)[k].to("cuda:0") # [ N, 1, D]
         
         # prompt_start와 prompt_end를 [ N, ~, D] 형태로 확장
         prompt_start = self.prompt_start
         prompt_end = self.prompt_end
    
-    
+
         # prompt_start, ctx, prompt_end를 concatenate하여 최종 [K, N, 77, D] 형태의 텐서 생성
         result = torch.cat([prompt_start, ctx, prompt_end], dim=1)
         
@@ -175,7 +180,7 @@ class PromptStyler(nn.Module):
             #print("T_style" ,style_feature.shape)
             style_feature = style_feature / style_feature.norm(dim=-1, keepdim=True, p=2) # [k, 512]
             
-            return [last_hidden_state, style_feature]
+            return [last_hidden_state.to(device), style_feature.to(device)]
 
         #style-content
         if p_case == 'style_content':
@@ -188,22 +193,23 @@ class PromptStyler(nn.Module):
             causal_attention_mask = _create_4d_causal_attention_mask(
                   self.token_prompt_list.size(), embedding_style_content.dtype, device=embedding_style_content.device
               )
-
-            # tmp = self.CLIP.text_model.encoder(inputs_embeds=embedding_style_content, attention_mask=attention_mask, causal_attention_mask=causal_attention_mask)[0]
-            # last_hidden_state = self.CLIP.text_model.final_layer_norm(tmp)
+            self.CLIP = self.CLIP.to('cuda:0')
+            tmp = self.CLIP.text_model.encoder(inputs_embeds=embedding_style_content, attention_mask=attention_mask, causal_attention_mask=causal_attention_mask)[0]
+            last_hidden_state = self.CLIP.text_model.final_layer_norm(tmp)
             
             # 배치 단위로 처리
-            last_hidden_states = []
-            batch_size = 20  # 배치 크기를 조정하여 메모리 사용량을 조절
-            for i in range(0, embedding_style_content.size(0), batch_size):
-                batch_embedding = embedding_style_content[i:i + batch_size]
-                tmp = self.CLIP.text_model.encoder(inputs_embeds=batch_embedding, attention_mask=attention_mask, causal_attention_mask=causal_attention_mask[i:i+batch_size])[0]
-                last_hidden_state = self.CLIP.text_model.final_layer_norm(tmp)
-                last_hidden_states.append(last_hidden_state)
-                torch.cuda.empty_cache()
-                
+            # last_hidden_states = []
+            # batch_size = 50  # 배치 크기를 조정하여 메모리 사용량을 조절
+            # for i in range(0, embedding_style_content.size(0), batch_size):
+            #     batch_embedding = embedding_style_content[i:i + batch_size]
+            #     with torch.no_grad():
+            #         tmp = self.CLIP.text_model.encoder(inputs_embeds=batch_embedding, attention_mask=attention_mask, causal_attention_mask=causal_attention_mask[i:i+batch_size])[0]
+            #     last_hidden_state = self.CLIP.text_model.final_layer_norm(tmp)
+            #     last_hidden_states.append(last_hidden_state)
+            #     del tmp, last_hidden_state
+            #     torch.cuda.empty_cache()                
 
-            last_hidden_state = torch.cat(last_hidden_states, dim=0) 
+            # last_hidden_state = torch.cat(last_hidden_states, dim=0) 
             
             #print("[N, 77, D] Embedding P_style_content", last_hidden_state.shape)
             pooled_output = last_hidden_state[torch.arange(last_hidden_state.shape[0], device=last_hidden_state.device),
@@ -214,7 +220,7 @@ class PromptStyler(nn.Module):
             #print("T_style_content" ,style_content_feature.shape)
             style_content_feature = style_content_feature / style_content_feature.norm(p=2, dim=-1, keepdim=True) #[N, D]
 
-            return [last_hidden_state, style_content_feature]
+            return [last_hidden_state.to(device), style_content_feature.to(device)]
 
 
 def style_diveristy_loss(T_style, i, cos_sim):
@@ -254,8 +260,7 @@ if __name__ == '__main__':
     seed_everything(seed)
   
     parser = argparse.ArgumentParser(description='Argparse Tutorial')
-    parser.add_argument('--data_dir', type=str, default='/home/dataset/OfficeHomeDataset_10072016/Art/')
-    parser.add_argument('--save_dir', type=str, default='/home/gue707/PromptStyler/result/')
+    parser.add_argument('--save_dir', type=str, default='/home/gue707/UTL_PromptStyler/result/')
     parser.add_argument('--dataset', type=str, default='OfficeHome')
     parser.add_argument('--train', type=str, default=None, choices=['both', 'style', 'classifier', None],
         help='Choose one of the following: both, diff, classifier')
@@ -264,9 +269,6 @@ if __name__ == '__main__':
         help='Choose one of the following: both, diff, classifier')
     
     args = parser.parse_args()
-
-    # classname_dir = sorted(os.listdir(args.data_dir), key=str.lower)
-    # classname_list = [name.replace(" ", "_") for name in classname_dir]
     
     classname_list = officehome_classnames
 
@@ -303,7 +305,7 @@ if __name__ == '__main__':
         train_INFO = {'K': K, 'epoch_per_style': L, 'N': len(classname_list)}
         get_cuda_info(train_INFO)
         
-        PS = PromptStyler_OPENCLIP if 'ViTH' in args.dataset else PromptStyler
+        PS = PromptStyler_OPENCLIP if 'ViTH' in args.dataset.replace("_","") else PromptStyler
         
         model = PS(config = config, classes_list=classname_list).to(device)
         
@@ -346,7 +348,6 @@ if __name__ == '__main__':
        
                 # # Total Loss
                 L_prompt = L_style + L_content
-                
                 # Gradient update
                 optimizer.zero_grad()
                 L_prompt.backward()

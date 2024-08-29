@@ -1,0 +1,31 @@
+
+K : 200
+CLIP : 'ViT-B/32'
+
+train_style:
+  epoch : 100
+  lr : 0.002
+  momentum : 0.9
+
+train_cf : 
+  epoch : 50
+  batch_size : 128
+  lr : 0.005
+  momentum : 0.9
+  angular_margin : 0.5
+  scaling_facor : 5
+
+ViT-L/14 : 
+  tf : "openai/clip-vit-large-patch14"
+  D : 768
+
+ViT-B/16 :
+  tf : 'openai/clip-vit-base-patch16'
+  D : 512
+
+ViT-B/32 :
+  tf : 'openai/clip-vit-base-patch32'
+  D : 512
+
+ResNet-50:
+  D : 512

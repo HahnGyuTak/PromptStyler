@@ -27,11 +27,11 @@ CUDA_VISIBLE_DEVICES=7
 OFFICEHOME
 CUDA_VISIBLE_DEVICES=7 python3 -m training.main \
   --zeroshot-frequency 1 \
-  --batch-size=256 \
+  --batch-size=512 \
   --workers=16 \
-  --model ViT-B-16 \
+  --model ViT-L-14 \
   --pretrained openai \
-  --down-eval=data/office-home/Product
+  --down-eval=/home/dataset/office-home/Art
   
 PACS
 CUDA_VISIBLE_DEVICES=7 python3 -m training.main \

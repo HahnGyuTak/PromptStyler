@@ -399,7 +399,7 @@ def main(args):
 
     if 'train' not in data:
         ps = None
-        if 0 :#args.model == "promptstyler":
+        if 1 :#args.model == "promptstyler":
             from training.classifier import AngularPenaltySMLoss, ArcMarginProduct
             
             in_features = 512 if args.model == "ViT-B-16" else 768
@@ -409,7 +409,7 @@ def main(args):
             s, m = 5, 0.5
             # ps = AngularPenaltySMLoss(in_features = in_features, out_features = out_features, s = s, m = m).to(device)
             ps = ArcMarginProduct(in_features = in_features, out_features = out_features, s = s, m = m).to(device)
-            ps.load_state_dict(torch.load("/home/gue707/PromptStyler/result/PACS_ViTB16/models/arfFace1.pth"))
+            ps.load_state_dict(torch.load("/home/gue707/UTL_PromptStyler/result/OfficeHome_ViTL14/models/arfFace1.pth"))
         evaluate(model, data, start_epoch, args, writer, ps)
         return 0
 

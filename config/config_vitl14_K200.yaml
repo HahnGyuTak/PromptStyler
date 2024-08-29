@@ -1,6 +1,5 @@
 
-K : 150
-
+K : 200
 CLIP : 'ViT-L/14'
 
 train_style:
@@ -22,6 +21,10 @@ ViT-L/14 :
 
 ViT-B/16 :
   tf : 'openai/clip-vit-base-patch16'
+  D : 512
+
+ViT-B/32 :
+  tf : 'openai/clip-vit-base-patch32'
   D : 512
 
 ResNet-50:
