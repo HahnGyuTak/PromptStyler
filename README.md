@@ -1,4 +1,6 @@
-# UTL_PromptStyler
+# PromptStyler
+
+A Pytorch implementation of [PromptStyler](https://arxiv.org/abs/2307.15199)
 
 ## Training
 
